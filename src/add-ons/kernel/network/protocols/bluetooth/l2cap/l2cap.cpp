@@ -259,7 +259,9 @@ l2cap_receive_data(net_buffer* buffer)
 			// We need to find the connection this packet is associated with.
 			struct HciConnection* connection = connection_for(buffer);
 			if (connection == NULL) {
-				panic("no connection for received L2CAP command");
+				// the link went away while its data was on the way
+				ERROR("l2cap: no connection for a received command\n");
+				gBufferModule->free(buffer);
 				return ENOTCONN;
 			}
 

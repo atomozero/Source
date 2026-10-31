@@ -141,7 +141,7 @@ L2capEndpoint::Shutdown()
 	if (fState == WAIT_FOR_CONNECTION_RSP || fDestinationChannelID == 0) {
 		// The remote side never gave us a channel: there is nothing to
 		// disconnect. A late response finds the endpoint closed.
-		fState = CLOSED;
+		_MarkClosed();
 		fCommandWait.NotifyAll();
 		return B_OK;
 	}
@@ -187,7 +187,7 @@ L2capEndpoint::Shutdown()
 		status = _WaitForStateChange(timeout);
 		if (status != B_OK) {
 			// no answer: the channel is gone for us anyway
-			fState = CLOSED;
+			_MarkClosed();
 			return status;
 		}
 	}
@@ -420,6 +420,12 @@ L2capEndpoint::ReadData(size_t numBytes, uint32 flags, net_buffer** _buffer)
 	ssize_t bytes = gStackModule->fifo_dequeue_buffer(&fReceiveQueue, flags, timeout, _buffer);
 	if (bytes == B_WOULD_BLOCK && fState == CLOSED)
 		return ENOTCONN;
+	if (bytes == B_OK && (*_buffer)->size == 0 && fState == CLOSED) {
+		// the mark _WakeReaders() left: leave it for the other readers
+		gStackModule->fifo_enqueue_buffer(&fReceiveQueue, *_buffer);
+		*_buffer = NULL;
+		return ENOTCONN;
+	}
 	return bytes;
 }
 
@@ -942,6 +948,40 @@ L2capEndpoint::_MarkClosed()
 
 	socket->error = ENOTCONN;
 	gSocketModule->notify(socket, B_SELECT_ERROR, ENOTCONN);
+	_WakeReaders();
 
-	gL2capEndpointManager.UnbindFromChannel(this);
+	if (fChannelID != 0)
+		gL2capEndpointManager.UnbindFromChannel(this);
+}
+
+
+/*!	A reader waiting for data would wait forever on a closed channel: an empty
+	buffer behind the data still queued tells it the channel is gone.
+*/
+void
+L2capEndpoint::_WakeReaders()
+{
+	net_buffer* mark = gBufferModule->create(0);
+	if (mark == NULL)
+		return;
+	if (gStackModule->fifo_enqueue_buffer(&fReceiveQueue, mark) != B_OK)
+		gBufferModule->free(mark);
+}
+
+
+/*!	The link under the channel is gone, without any disconnection on the
+	channel itself: the device went out of range or off, or the controller
+	went away.
+*/
+void
+L2capEndpoint::LinkLost()
+{
+	MutexLocker locker(fLock);
+
+	fConnection = NULL;
+	if (fState == CLOSED)
+		return;
+
+	_MarkClosed();
+	fCommandWait.NotifyAll();
 }

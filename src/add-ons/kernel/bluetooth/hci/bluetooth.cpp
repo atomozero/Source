@@ -284,6 +284,11 @@ UnregisterDriver(hci_id id)
 	if (device == NULL)
 		return B_ERROR;
 
+	// The links of the controller go with it. Their connections point to the
+	// device, and the channels on them would wait for data forever.
+	if (btCoreData != NULL)
+		btCoreData->RemoveConnections(id);
+
 	if (device->GetDoublyLinkedListLink()->next != NULL
 		|| device->GetDoublyLinkedListLink()->previous != NULL
 		|| device == sDeviceList.Head())
